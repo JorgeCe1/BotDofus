@@ -1,0 +1,28 @@
+# X=870, Y=63 Esquina superior izquierda
+# X=870, Y=652 Esquina inferior izquierda
+# X=1696, Y=652 Esquina inferior derecha
+# X=1696, Y=63 Esquina superior derecha
+
+# Región del juego
+pantstart_x = 870
+pantstart_y = 63
+pantlimit_x = 1696
+pantlimit_y = 652
+ancho = pantlimit_x - pantstart_x  # 826
+alto = pantlimit_y - pantstart_y  # 589
+
+# X=655, Y=97 Esquina superior izquierda
+# X=657, Y=112 Esquina inferior izquierda
+# X=694, Y=97 Esquina inferior derecha
+# X=694, Y=116 Esquina superior derecha
+# Ancho (zona_w) = X_derecha - X_izquierda
+# → 694 - 655 = 39
+# Alto (zona_h) = Y_inferior - Y_superior
+# → 116 - 97 = 19
+
+# Región de comparación visual (coordenadas absolutas)
+zona_x = 655
+zona_y = 97
+zona_w = 39
+zona_h = 19
+zona_control = (zona_x, zona_y, zona_w, zona_h)
