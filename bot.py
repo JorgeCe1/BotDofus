@@ -8,16 +8,18 @@ import winsound
 import threading
 import pytesseract
 import keyboard
-# from PIL import Image
+from PIL import Image
 # import easyocr
-# import re
+import re
 import cv2
 import numpy as np
 import pyautogui
 # from transformers import TrOCRProcessor, VisionEncoderDecoderModel
 # import torch
 # from collections import Counter
-import mss
+# import mss
+import difflib
+from difflib import SequenceMatcher
 
 
 # Cargar modelo TrOCR base
@@ -91,8 +93,8 @@ imagen_referencia = None
 
 zonas_definidas = [
     # {"eje": "x", "desde": -56, "hasta": -55, "fijo": 4},  # Mover horizontalmente: (3, -14) → (4, -14)
-    {"eje": "y", "desde": -13, "hasta": -13, "fijo": 5},  # Mover verticalmente: (4, -14) → (4, -13)
-    {"eje": "y", "desde": -13, "hasta": -13, "fijo": 6},  # Mover verticalmente: (4, -14) → (4, -13)
+    {"eje": "x", "desde": 2, "hasta": 3, "fijo": 7},  # Mover verticalmente: (4, -14) → (4, -13)
+    {"eje": "x", "desde": 3, "hasta": 2, "fijo": 7},  # Mover verticalmente: (4, -14) → (4, -13)
     # {"eje": "x", "desde": -55, "hasta": -56, "fijo": 5},  # Mover horizontalmente en reversa: (4, -13) → (3, -13)
     # {"eje": "diagonal", "desde_x": 1, "hasta_x": 2, "desde_y": -17, "hasta_y": -18}
 ]
@@ -102,6 +104,42 @@ ruta_completa = []
 posicion_actual_index = -1
 direccion = 1  # 1: adelante, -1: atrás
 
+# Cargar nombres válidos
+try:
+    with open("nombres_monstruos.txt", "r", encoding="utf-8") as f:
+        nombres_validos = [line.strip().lower() for line in f if line.strip()]
+except FileNotFoundError:
+    print("⚠️ Archivo 'nombres_monstruos.txt' no encontrado.")
+    nombres_validos = []
+
+# Comparación aproximada
+def encontrar_similar(texto_ocr, nombres_validos, umbral=0.75):
+    texto_ocr = texto_ocr.lower()
+    mejores = []
+    for nombre in nombres_validos:
+        ratio = SequenceMatcher(None, texto_ocr, nombre).ratio()
+        if ratio >= umbral:
+            mejores.append((nombre, round(ratio, 2)))
+    return sorted(mejores, key=lambda x: x[1], reverse=True)
+
+# Validación exacta o aproximada
+def es_texto_valido(texto):
+    texto_normalizado = texto.lower().strip()
+    coincidencias = difflib.get_close_matches(texto_normalizado, nombres_validos, n=1, cutoff=0.6)
+    return coincidencias[0] if coincidencias else None
+
+# Limpiar texto OCR
+def limpiar_linea_para_busqueda(linea):
+    linea = linea.lower()
+    linea = re.sub(r"\(\d+\)", "", linea)  # Elimina números entre paréntesis
+    linea = re.sub(r"[^a-záéíóúñ\s]", "", linea)  # Quita símbolos
+    linea = re.sub(r"\s{2,}", " ", linea)  # Reemplaza múltiples espacios por uno solo
+    return linea.strip()
+
+def linea_es_ruido(linea):
+    letras = re.findall(r"[a-záéíóúñ]", linea.lower())
+    proporcion_letras = len(letras) / max(1, len(linea))
+    return proporcion_letras < 0.6
 
 # 🔊 Reproducir sonido
 def reproducir_sonido():
@@ -255,88 +293,148 @@ def al_fallar_3_veces():
 def buscar_fuegos(plantillas):
     global buscando, intentos_fallidos
 
-    screenshot = pyautogui.screenshot(region=(pantstart_x, pantstart_y, ancho, alto))
-    img_rgb = np.array(screenshot)
-    img_gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
-    
-    # Preprocesamiento mejorado
-    img_gray = cv2.GaussianBlur(img_gray, (5, 5), 0)
-    img_gray = cv2.equalizeHist(img_gray)
-    
-    # Variables para seguimiento
-    mejor_max_val = 0
-    mejor_pos = None
-    mejor_nombre = ""
-    mejor_template_size = (0, 0)
-    detecciones_validas = []
+    # 1. Búsqueda de texto con W presionada (usando tu método exacto)
+    try:
+        keyboard.press('w')
+        time.sleep(0.15)  # Tiempo para que aparezcan los cuadros
+        
+        # Captura completa del área del juego usando tus coordenadas
+        captura = pyautogui.screenshot(region=(
+            pantstart_x,
+            pantstart_y,
+            ancho,
+            alto
+        ))
+        keyboard.release('w')
+        
+        # Tu lógica exacta de procesamiento OCR
+        img_np = np.array(captura)
+        img_gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+        # cv2.imwrite("verificacion.png", img_gray)
+        
+        texto_crudo = pytesseract.image_to_string(img_gray, lang="spa", config='--psm 6')
+        lineas = [line.strip() for line in texto_crudo.splitlines() if line.strip()]
+        texto_encontrado = None
+        print(texto_crudo)
+        
+        for linea in lineas:
+            print(f"📝 OCR bruta: '{linea}'")
+            
+            if linea_es_ruido(linea):
+                print("⛔ Línea descartada como ruido")
+                continue
 
-    for nombre, template in plantillas:
-        # Manejo de plantillas con/sin transparencia
-        if len(template.shape) == 3 and template.shape[2] == 4:
-            alpha = template[:, :, 3]
-            template_gray = cv2.cvtColor(template[:, :, :3], cv2.COLOR_BGR2GRAY)
-            mask = cv2.threshold(alpha, 50, 255, cv2.THRESH_BINARY)[1]
-            res = cv2.matchTemplate(img_gray, template_gray, cv2.TM_CCOEFF_NORMED, mask=mask)
-        else:
-            if len(template.shape) == 3:
-                template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
-            else:
-                template_gray = template
-            res = cv2.matchTemplate(img_gray, template_gray, cv2.TM_CCOEFF_NORMED)
-        
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
-        w, h = template_gray.shape[::-1]
-        
-        print(f"🔍 {nombre} - Min: {min_val:.4f}, Max: {max_val:.4f}, MaxLoc: {max_loc}")
+            linea_limpia = limpiar_linea_para_busqueda(linea)
+            print(f"✅ Línea limpia: '{linea_limpia}'")
 
-        # Umbral dinámico basado en características de la imagen
-        brightness = np.mean(img_gray)/255
-        dynamic_threshold = 0.45 + (brightness * 0.2)  # Rango 0.45-0.65
-        
-        if max_val >= dynamic_threshold:
-            detecciones_validas.append({
-                'nombre': nombre,
-                'max_val': max_val,
-                'pos': max_loc,
-                'size': (w, h)
-            })
+            if len(linea_limpia) < 4:
+                print("⛔ Demasiado corta")
+                continue
 
-    # Procesar detecciones válidas
-    if detecciones_validas:
-        # Ordenar por score de coincidencia
-        detecciones_validas.sort(key=lambda x: x['max_val'], reverse=True)
-        
-        # Seleccionar la mejor detección
-        mejor_deteccion = detecciones_validas[0]
-        mejor_max_val = mejor_deteccion['max_val']
-        mejor_pos = mejor_deteccion['pos']
-        mejor_nombre = mejor_deteccion['nombre']
-        mejor_template_size = mejor_deteccion['size']
-        
-        # Verificación adicional de calidad
-        x, y = mejor_pos
-        w, h = mejor_template_size
-        roi = img_gray[y:y+h, x:x+w]
-        
-        # Calcular métricas de calidad
-        contrast = np.std(roi)
-        brightness_roi = np.mean(roi)
-        
-        # Si pasa todas las verificaciones
-        if contrast > 20 and 30 < brightness_roi < 220:
-            print(f"🔥 Fuego detectado con '{mejor_nombre}' (score: {mejor_max_val:.2f}, thr: {dynamic_threshold:.2f})")
-            pos_x = mejor_pos[0] + pantstart_x
-            pos_y = mejor_pos[1] + pantstart_y
-            mover_x = pos_x + 15
-            mover_y = pos_y + 50
-            pyautogui.moveTo(mover_x, mover_y)
+            coincidencia = es_texto_valido(linea_limpia)
+            print(f"🎯 Coincidencia: {coincidencia}")
+
+            if coincidencia:
+                texto_encontrado = (linea, coincidencia)
+                break
+
+        if texto_encontrado:
+            linea_ocr, nombre_valido = texto_encontrado
+            print(f"\n✅ ¡Monstruo detectado! → '{nombre_valido}'")
+            print(f"🔤 OCR: '{linea_ocr}'")
             reproducir_sonido()
             buscando = False
             intentos_fallidos = 0
             return
-    
-    # Si no hay detecciones válidas
-    print(f"❌ Ninguna coincidencia superó el umbral. Mejor: {mejor_max_val:.2f}")
+
+    except Exception as e:
+        print(f"⚠️ Error al buscar texto: {str(e)}")
+        keyboard.release('w')  # Asegurar liberación de tecla
+
+    # 2. Búsqueda de fuegos con dos métodos de comparación
+    screenshot = pyautogui.screenshot(region=(pantstart_x, pantstart_y, ancho, alto))
+    img_rgb = np.array(screenshot)
+
+    # Versión 1: Solo escalado (método rápido)
+    img_upscaled = cv2.resize(img_rgb, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    img_gray_simple = cv2.cvtColor(img_upscaled, cv2.COLOR_RGB2GRAY)
+
+    # Versión 2: Preprocesamiento completo (método preciso)
+    img_gray_enhanced = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    img_gray_enhanced = cv2.GaussianBlur(img_gray_enhanced, (5,5), 0)
+    img_gray_enhanced = cv2.equalizeHist(img_gray_enhanced)
+    img_gray_enhanced = cv2.resize(img_gray_enhanced, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+
+    mejor_coincidencia = {'nombre': None, 'max_val': 0, 'pos': None, 'metodo': None}
+
+    for nombre, template in plantillas:
+        # Preparar plantilla según su tipo
+        if len(template.shape) == 3:
+            if template.shape[2] == 4:  # Plantilla con alpha channel
+                alpha = template[:,:,3]
+                template_gray = cv2.cvtColor(template[:,:,:3], cv2.COLOR_BGR2GRAY)
+                mask = cv2.threshold(alpha, 50, 255, cv2.THRESH_BINARY)[1]
+            else:
+                template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+                mask = None
+        else:
+            template_gray = template
+            mask = None
+        
+        # Escalar plantilla para coincidir con la imagen upscaled
+        template_scaled = cv2.resize(template_gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        if mask is not None:
+            mask = cv2.resize(mask, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST)
+
+        # Método 1: Comparación simple (rápida)
+        res_simple = cv2.matchTemplate(img_gray_simple, template_scaled, cv2.TM_CCOEFF_NORMED, mask=mask)
+        _, max_val_simple, _, max_loc_simple = cv2.minMaxLoc(res_simple)
+        
+        # Método 2: Comparación con preprocesamiento (precisa)
+        res_enhanced = cv2.matchTemplate(img_gray_enhanced, template_scaled, cv2.TM_CCOEFF_NORMED, mask=mask)
+        _, max_val_enhanced, _, max_loc_enhanced = cv2.minMaxLoc(res_enhanced)
+        
+        # Seleccionar el mejor resultado entre ambos métodos
+        if max_val_enhanced > max_val_simple:
+            current_max = max_val_enhanced
+            current_loc = max_loc_enhanced
+            metodo = 'preciso'
+        else:
+            current_max = max_val_simple
+            current_loc = max_loc_simple
+            metodo = 'rápido'
+        
+        # Umbral dinámico
+        brightness = np.mean(img_gray_simple)/255
+        threshold = max(0.45, 0.4 + brightness * 0.25)
+        
+        if current_max > threshold and current_max > mejor_coincidencia['max_val']:
+            # Verificación adicional de calidad
+            x, y = current_loc
+            w, h = template_scaled.shape[::-1]
+            roi = img_gray_simple[y:y+h, x:x+w] if metodo == 'rápido' else img_gray_enhanced[y:y+h, x:x+w]
+            
+            if np.std(roi) > 15 and 25 < np.mean(roi) < 230:
+                mejor_coincidencia = {
+                    'nombre': nombre,
+                    'max_val': current_max,
+                    'pos': (x//2, y//2),  # Ajustar coordenadas al tamaño original
+                    'metodo': metodo
+                }
+
+    # Procesar mejor coincidencia encontrada
+    if mejor_coincidencia['nombre']:
+        nombre = mejor_coincidencia['nombre']
+        x, y = mejor_coincidencia['pos']
+        print(f"🔥 Detección ({mejor_coincidencia['metodo']}): {nombre} (score: {mejor_coincidencia['max_val']:.2f})")
+        pyautogui.moveTo(x + pantstart_x + 15, y + pantstart_y + 50)
+        reproducir_sonido()
+        buscando = False
+        intentos_fallidos = 0
+        return
+
+    # Si no hay coincidencias
+    print("❌ No se encontraron coincidencias válidas")
     intentos_fallidos += 1
     if intentos_fallidos >= 3:
         al_fallar_3_veces()
